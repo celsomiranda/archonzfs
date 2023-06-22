@@ -26,69 +26,68 @@ set -e
 # Secureboot/Change Default Boot Option requires manual confirmation if set to 1. Set to 0 to skip.
 #
 if [[ -f $1 ]]; then
-set -a
-. "$1"
-set +a
+	set -a
+	. "$1"
+	set +a
 fi
 
-ask () {
-    read -p "> $1 " -r
-    echo
+ask() {
+	read -p "> $1 " -r
+	echo
 }
 
-passask () {
-    while true; do
-      echo
-      echo "> $1"
-      read -r -s PASS1
-      echo
-      echo "> Verify $1"
-      read -r -s PASS2
-      echo
-      [ "$PASS1" = "$PASS2" ] && break || echo "Passwords do not Match. Please try again."
-    done
-    echo -n "$PASS2" > "$2"
-    chmod 000 "$2"
-    print "$1 can be reviewed at $2 prior to reboot"
-    unset PASS1
-    unset PASS2
+passask() {
+	while true; do
+		echo
+		echo "> $1"
+		read -r -s PASS1
+		echo
+		echo "> Verify $1"
+		read -r -s PASS2
+		echo
+		[ "$PASS1" = "$PASS2" ] && break || echo "Passwords do not Match. Please try again."
+	done
+	echo -n "$PASS2" >"$2"
+	chmod 000 "$2"
+	print "$1 can be reviewed at $2 prior to reboot"
+	unset PASS1
+	unset PASS2
 }
 
-umountandexport () {
-    print "Umount all partitions"
-    umount /mnt/efi
-    zfs umount -a
-    umount -R /mnt
-    print "Export zpool"
-    zpool export zroot
+umountandexport() {
+	print "Umount all partitions"
+	umount /mnt/efi
+	zfs umount -a
+	umount -R /mnt
+	print "Export zpool"
+	zpool export zroot
 }
 
-kernelselect () {
-    select ENTRY in $(cat /tmp/listkernels);
-      do
-        echo "Adding $ENTRY kernel to installation"
-        LINUXARRAY+=( "$ENTRY" )
-        echo "Current Kernel's to be installed ${LINUXARRAY[*]}"
-        if [[ $ENTRY = linux ]]; then
-          sed -i "1d" /tmp/listkernels
-        else
-          sed -i "/$ENTRY/d" /tmp/listkernels
-        fi
-        (( --count ))
-        while (( count > 0 )); do
-          ask "Are you done selecting kernels?"
-          if [[ $REPLY =~ ^[Yy]$ ]]; then
-            count=0
-            break
-          fi
-            kernelselect
-        done
-        break
-      done
+kernelselect() {
+	select ENTRY in $(cat /tmp/listkernels); do
+		echo "Adding $ENTRY kernel to installation"
+		LINUXARRAY+=("$ENTRY")
+		echo "Current Kernel's to be installed ${LINUXARRAY[*]}"
+		if [[ $ENTRY = linux ]]; then
+			sed -i "1d" /tmp/listkernels
+		else
+			sed -i "/$ENTRY/d" /tmp/listkernels
+		fi
+		((--count))
+		while ((count > 0)); do
+			ask "Are you done selecting kernels?"
+			if [[ $REPLY =~ ^[Yy]$ ]]; then
+				count=0
+				break
+			fi
+			kernelselect
+		done
+		break
+	done
 }
 
-print () {
-    echo -e "\n\033[1m> $1\033[0m\n"
+print() {
+	echo -e "\n\033[1m> $1\033[0m\n"
 }
 
 # Get Scripts and Stuff into Place
@@ -110,245 +109,239 @@ curl -s https://raw.githubusercontent.com/eoli3n/archiso-zfs/master/init | bash
 
 # Partition Drive
 if [[ -z $EFI && -z $ZFS ]]; then
-print "Choose Drive"
-select ENTRY in $(ls /dev/disk/by-id);
-do
-  DISK="/dev/disk/by-id/$ENTRY"
-  echo "$DISK" > /tmp/disk
-  echo "Installing on $ENTRY"
-  break
-done
+	print "Choose Drive"
+	select ENTRY in $(ls /dev/disk/by-id); do
+		DISK="/dev/disk/by-id/$ENTRY"
+		echo "$DISK" >/tmp/disk
+		echo "Installing on $ENTRY"
+		break
+	done
 
-ask "Do you want to repartition $DISK?"
-  if [[ $REPLY =~ ^[Yy]$ ]]; then
-  echo "Partitioning Drive"
-  # EFI Partition
-  sgdisk -Zo "$DISK"
-  while true; do
-    ask "Size of EFI Partition in [MiB]? Minimum is 512 MiB:"
-    if (( "$REPLY" >= 512 )); then break; else print "Oops. Too small, $REPLY is less than minimum is 512 [MiB]"; fi
-  done
-  sgdisk -n1:1M:+"$REPLY"M -t1:EF00 -c1:EFI "$DISK"
-  EFI="$DISK-part1"
+	ask "Do you want to repartition $DISK?"
+	if [[ $REPLY =~ ^[Yy]$ ]]; then
+		echo "Partitioning Drive"
+		# EFI Partition
+		sgdisk -Zo "$DISK"
+		while true; do
+			ask "Size of EFI Partition in [MiB]? Minimum is 512 MiB:"
+			if (("$REPLY" >= 512)); then break; else print "Oops. Too small, $REPLY is less than minimum is 512 [MiB]"; fi
+		done
+		sgdisk -n1:1M:+"$REPLY"M -t1:EF00 -c1:EFI "$DISK"
+		EFI="$DISK-part1"
 
-  ask "Do you want a Swap Partition?"
-      if [[ $REPLY =~ ^[Yy]$ ]]
-      then
-        ask "Do you want Resume Support (Requires SWAP > MEMORY)?"
-          if [[ $REPLY =~ ^[Yy]$ ]]; then
-            SWAPRESUME=1
-            SWAPMIN=$(free -h | sed -n '2p' | awk '{ print $2 }')
-            SWAPMIN=$(( ${SWAPMIN::-2} + 2 ))
-            while true; do
-              ask "Size of Swap Partition in [GiB]? Minimum is $SWAPMIN GiB:"
-              if (( "$REPLY" >= "$SWAPMIN" )); then break;
-              else
-                print "Oops. Too small, $REPLY GiB is less than minimum $SWAPMIN GiB for Resume Support"
-                ask "Do you wish to still have Resume Support?"
-                if [[ $CHECK =~ ^[Yy]$ ]]; then
-                  SWAPRESUME=1
-                else
-                  unset SWAPRESUME
-                  ask "Size of Swap Partition in [GiB]?"
-                  break
-                fi
-              fi
-            done
-          else
-            ask "Size of Swap Partition in [GiB]?"
-          fi
-          sgdisk -n2:0:+"$REPLY"G -t2:8200 -c2:SWAP "$DISK"
-          SWAPPART="$DISK-part2"
-      fi
+		ask "Do you want a Swap Partition?"
+		if [[ $REPLY =~ ^[Yy]$ ]]; then
+			ask "Do you want Resume Support (Requires SWAP > MEMORY)?"
+			if [[ $REPLY =~ ^[Yy]$ ]]; then
+				SWAPRESUME=1
+				SWAPMIN=$(free -h | sed -n '2p' | awk '{ print $2 }')
+				SWAPMIN=$((${SWAPMIN::-2} + 2))
+				while true; do
+					ask "Size of Swap Partition in [GiB]? Minimum is $SWAPMIN GiB:"
+					if (("$REPLY" >= "$SWAPMIN")); then
+						break
+					else
+						print "Oops. Too small, $REPLY GiB is less than minimum $SWAPMIN GiB for Resume Support"
+						ask "Do you wish to still have Resume Support?"
+						if [[ $CHECK =~ ^[Yy]$ ]]; then
+							SWAPRESUME=1
+						else
+							unset SWAPRESUME
+							ask "Size of Swap Partition in [GiB]?"
+							break
+						fi
+					fi
+				done
+			else
+				ask "Size of Swap Partition in [GiB]?"
+			fi
+			sgdisk -n2:0:+"$REPLY"G -t2:8200 -c2:SWAP "$DISK"
+			SWAPPART="$DISK-part2"
+		fi
 
-# ZFS Partition
-sgdisk -n3:0:0 -t3:BF00 -c3:ZFS "$DISK"
-ZFS="$DISK-part3"
+		# ZFS Partition
+		sgdisk -n3:0:0 -t3:BF00 -c3:ZFS "$DISK"
+		ZFS="$DISK-part3"
 
-# notify Kernel
-partprobe "$DISK"
+		# notify Kernel
+		partprobe "$DISK"
 
-# Format EFI Partition
-sleep 1
-echo "Formatting EFI Partition"
-mkfs.vfat -F32 "$EFI"
-  fi
+		# Format EFI Partition
+		sleep 1
+		echo "Formatting EFI Partition"
+		mkfs.vfat -F32 "$EFI"
+	fi
 fi
 if [[ -z "$EFI" ]]; then
-  print "Select EFI Partition"
-  select ENTRY in $(ls "$DISK"-part*);
-  do
-    print "Reusing $ENTRY as EFI partition"
-    echo "This does not change partition"
-    EFI=$ENTRY
-    break
-  done
+	print "Select EFI Partition"
+	select ENTRY in $(ls "$DISK"-part*); do
+		print "Reusing $ENTRY as EFI partition"
+		echo "This does not change partition"
+		EFI=$ENTRY
+		break
+	done
 fi
 if [[ -z "$ZFS" ]]; then
-  print "Select ZFS Root Partition"
-  select ENTRY in $(ls "$DISK"-part*);
-  do
-    print "Reusing $ENTRY as ZFS Root partition"
-    echo "This does not change partition"
-    ZFS=$ENTRY
-    break
-  done
+	print "Select ZFS Root Partition"
+	select ENTRY in $(ls "$DISK"-part*); do
+		print "Reusing $ENTRY as ZFS Root partition"
+		echo "This does not change partition"
+		ZFS=$ENTRY
+		break
+	done
 fi
 if [[ -z $SWAPPART ]]; then
-  if (( "$( find "$DISK"-* | wc -l )" > 2 )); then
-  ask "Do you have a Swap Partition? Requires PARTLABEL = SWAP."
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-      select ENTRY in $(ls "$DISK"-part*);
-      do
-        print "Reusing $ENTRY as Swap partition"
-        SWAPPART=$ENTRY
-        echo "Not Checking PARTLABEL = SWAP."
-        echo "This does not change partition settings"
-        ask "Do you wish to Resume from this partition? Requires Swap > Memory."
-          if [[ $REPLY =~ ^[Yy]$ ]]; then
-            echo "Not checking for Swap > Memory"
-            echo "Hibernation will fail if not true."
-            SWAPRESUME=1
-          fi
-        break
-      done
-    fi
-  fi
+	if (("$(find "$DISK"-* | wc -l)" > 2)); then
+		ask "Do you have a Swap Partition? Requires PARTLABEL = SWAP."
+		if [[ $REPLY =~ ^[Yy]$ ]]; then
+			select ENTRY in $(ls "$DISK"-part*); do
+				print "Reusing $ENTRY as Swap partition"
+				SWAPPART=$ENTRY
+				echo "Not Checking PARTLABEL = SWAP."
+				echo "This does not change partition settings"
+				ask "Do you wish to Resume from this partition? Requires Swap > Memory."
+				if [[ $REPLY =~ ^[Yy]$ ]]; then
+					echo "Not checking for Swap > Memory"
+					echo "Hibernation will fail if not true."
+					SWAPRESUME=1
+				fi
+				break
+			done
+		fi
+	fi
 fi
 
 if [[ -n $SWAPRESUME ]]; then
-    print "Create Encrypted Swap"
-    SWAP=/dev/mapper/swap
-    if [[ ! -f $SWAPKEY ]]; then
-    SWAPKEY=/tmp/swap.key
-    passask "Swap LUKs Passphrase" "$SWAPKEY"
-    fi
-    cryptsetup luksFormat --batch-mode --key-file=/tmp/swap.key "$SWAPPART"
-    cryptsetup open --key-file="$SWAPKEY" "$SWAPPART" swap
+	print "Create Encrypted Swap"
+	SWAP=/dev/mapper/swap
+	if [[ ! -f $SWAPKEY ]]; then
+		SWAPKEY=/tmp/swap.key
+		passask "Swap LUKs Passphrase" "$SWAPKEY"
+	fi
+	cryptsetup luksFormat --batch-mode --key-file=/tmp/swap.key "$SWAPPART"
+	cryptsetup open --key-file="$SWAPKEY" "$SWAPPART" swap
 fi
 
 # Set ZFS passphrase
 if [[ ! -f $ZFSKEY ]]; then
-    ZFSKEY=/etc/zfs/zroot.key
-    print "Set ZFS passphrase for Encrypted Datasets"
-    passask "ZFS Passphrase" "$ZFSKEY"
+	ZFSKEY=/etc/zfs/zroot.key
+	print "Set ZFS passphrase for Encrypted Datasets"
+	passask "ZFS Passphrase" "$ZFSKEY"
 elif [[ $ZFSKEY != /etc/zfs/zroot.key ]]; then
-    cat "$ZFSKEY" > /etc/zfs/zroot.key
-    ZFSKEY=/etc/zfs/zroot.key
+	cat "$ZFSKEY" >/etc/zfs/zroot.key
+	ZFSKEY=/etc/zfs/zroot.key
 fi
 
 # Set Root Account Password
 if [[ ! -f $ROOTKEY ]]; then
-ROOTKEY=/tmp/root.key
-print "Set Root Account Password for new Installtion"
-passask "Root Password" "/tmp/root.key"
+	ROOTKEY=/tmp/root.key
+	print "Set Root Account Password for new Installtion"
+	passask "Root Password" "/tmp/root.key"
 fi
-awk '{ print "root:" $0 }' "$ROOTKEY" > /tmp/root-chpasswd.key
+awk '{ print "root:" $0 }' "$ROOTKEY" >/tmp/root-chpasswd.key
 
 if [[ -z "$HOSTNAMEINSTALL" ]]; then
-ask "Please enter hostname for Installation:"
-HOSTNAMEINSTALL="$REPLY"
+	ask "Please enter hostname for Installation:"
+	HOSTNAMEINSTALL="$REPLY"
 fi
 
 if [[ -z "${LINUXARRAY[*]}" ]]; then
-LINUXARRAY=(linux-lts)
-ask "Do you wish to install additional kernel's? Default Kernel is Linux-lts."
-  if [[ $REPLY =~ ^[Yy]$ ]]; then
-    cat > /tmp/listkernels << EOF
+	LINUXARRAY=(linux-lts)
+	ask "Do you wish to install additional kernel's? Default Kernel is Linux-lts."
+	if [[ $REPLY =~ ^[Yy]$ ]]; then
+		cat >/tmp/listkernels <<EOF
     linux
     linux-zen
     linux-hardened
 EOF
-count=$(wc -l < /tmp/listkernels)
-kernelselect
-  fi
+		count=$(wc -l </tmp/listkernels)
+		kernelselect
+	fi
 fi
-LINUXARRAYHEADERS=( "${LINUXARRAY[@]/%/-headers}" )
+LINUXARRAYHEADERS=("${LINUXARRAY[@]/%/-headers}")
 
 if [[ ! -f "$SSHKEY" && -z "$ZFSREMOTE" ]]; then
-ask "Do you want to have SSH Access (Remote) to ZFSBootMenu?"
-  if [[ $REPLY =~ ^[Yy]$ ]]; then
-    ZFSREMOTE=1
-    if [[ ! -f "$SSHKEY" ]]; then
-    ask "Do you have an SSH Public Key you wish to upload now?"
-      if [[ $REPLY =~ ^[Yy]$ ]]; then
-        ask "What is the full path to the SSH Public Key?"
-        SSHKEY=$REPLY
-        while [ ! -f "$SSHKEY" ];
-        do
-        if [ ! -f "$SSHKEY" ]; then
-           ask "$SSHKEY does not exist. Would you like to try again?"
-           if [[ $REPLY =~ ^[Yy]$ ]]; then
-             ask "What is the full path to the SSH Public Key?"
-             SSHKEY=$REPLY
-           else
-             break
-           fi
-        else
-          break
-        fi
-        done
-      fi
-    fi
-  fi
+	ask "Do you want to have SSH Access (Remote) to ZFSBootMenu?"
+	if [[ $REPLY =~ ^[Yy]$ ]]; then
+		ZFSREMOTE=1
+		if [[ ! -f "$SSHKEY" ]]; then
+			ask "Do you have an SSH Public Key you wish to upload now?"
+			if [[ $REPLY =~ ^[Yy]$ ]]; then
+				ask "What is the full path to the SSH Public Key?"
+				SSHKEY=$REPLY
+				while [ ! -f "$SSHKEY" ]; do
+					if [ ! -f "$SSHKEY" ]; then
+						ask "$SSHKEY does not exist. Would you like to try again?"
+						if [[ $REPLY =~ ^[Yy]$ ]]; then
+							ask "What is the full path to the SSH Public Key?"
+							SSHKEY=$REPLY
+						else
+							break
+						fi
+					else
+						break
+					fi
+				done
+			fi
+		fi
+	fi
 elif [[ -f "$SSHKEY" ]]; then
-  ZFSREMOTE=1
+	ZFSREMOTE=1
 fi
 
 if [[ -z "$NOCHANGEDEFAULT" && -z "$DEFAULTBOOT" ]]; then
-print "Default Boot Choice is archlinux-linux-lts.efi UKI\nKernel Command Line Editor is disabled, use ZFSBootMenu to edit KCL"
-ask "Do you wish to change the Default Boot Choice during Installation?"
-  if [[ $REPLY =~ ^[Yy]$ ]]; then
-      LINUXARRAYEFI=( "${LINUXARRAY[@]/%/\.efi}" )
-      LINUXARRAYEFI=( "${LINUXARRAYEFI[@]/#/archlinux-}" )
-      printf "%s\n" "${LINUXARRAYEFI[@]}" > /tmp/listboot
-    echo "zfsbootmenu.conf" >> /tmp/listboot
-    select ENTRY in $(cat /tmp/listboot);
-    do
-      echo "Setting $ENTRY as Default Boot Option"
-      DEFAULTBOOT=$ENTRY
-      break
-    done
-  fi
+	print "Default Boot Choice is archlinux-linux-lts.efi UKI\nKernel Command Line Editor is disabled, use ZFSBootMenu to edit KCL"
+	ask "Do you wish to change the Default Boot Choice during Installation?"
+	if [[ $REPLY =~ ^[Yy]$ ]]; then
+		LINUXARRAYEFI=("${LINUXARRAY[@]/%/\.efi}")
+		LINUXARRAYEFI=("${LINUXARRAYEFI[@]/#/archlinux-}")
+		printf "%s\n" "${LINUXARRAYEFI[@]}" >/tmp/listboot
+		echo "zfsbootmenu.conf" >>/tmp/listboot
+		select ENTRY in $(cat /tmp/listboot); do
+			echo "Setting $ENTRY as Default Boot Option"
+			DEFAULTBOOT=$ENTRY
+			break
+		done
+	fi
 fi
 
 if [[ -z "$SECUREBOOT" ]]; then
-ask "Would you like to sign EFI executables and enroll keys for Secureboot Support during Installation?"
-  if [[ $REPLY =~ ^[Yy]$ ]]; then
-    SECUREBOOT=1
-  fi
+	ask "Would you like to sign EFI executables and enroll keys for Secureboot Support during Installation?"
+	if [[ $REPLY =~ ^[Yy]$ ]]; then
+		SECUREBOOT=1
+	fi
 fi
 
 if [[ -z "$UMOUNT" ]]; then
-ask "Do you want to unmount all partitions and export zpool following Installation?"
-  if [[ $REPLY =~ ^[Yy]$ ]]; then
-    UMOUNT=1
-  fi
+	ask "Do you want to unmount all partitions and export zpool following Installation?"
+	if [[ $REPLY =~ ^[Yy]$ ]]; then
+		UMOUNT=1
+	fi
 fi
 
 if [[ -z "$AUTOREBOOT" ]]; then
-  if [[ -n $UMOUNT ]]; then
-    ask "Do you want to reboot automatically following Installation?"
-      if [[ $REPLY =~ ^[Yy]$ ]]; then
-        AUTOREBOOT=1
-      fi
-  fi
+	if [[ -n $UMOUNT ]]; then
+		ask "Do you want to reboot automatically following Installation?"
+		if [[ $REPLY =~ ^[Yy]$ ]]; then
+			AUTOREBOOT=1
+		fi
+	fi
 fi
 
 if [[ -n "$AUTOREBOOT" && -z "$UMOUNT" ]]; then
-  print "Autoreboot set, but unmount and export not set."
-  ask "Do you wish to unset Autoreboot?"
-      if [[ $REPLY =~ ^[Yy]$ ]]; then
-        unset AUTOREBOOT
-      else
-        ask "Do you want to unmount all partitions and export zpool following Installation?"
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-          UMOUNT=1
-        else
-          echo "Unsetting Autoreboot."
-          unset AUTOREBOOT
-        fi
-      fi
+	print "Autoreboot set, but unmount and export not set."
+	ask "Do you wish to unset Autoreboot?"
+	if [[ $REPLY =~ ^[Yy]$ ]]; then
+		unset AUTOREBOOT
+	else
+		ask "Do you want to unmount all partitions and export zpool following Installation?"
+		if [[ $REPLY =~ ^[Yy]$ ]]; then
+			UMOUNT=1
+		else
+			echo "Unsetting Autoreboot."
+			unset AUTOREBOOT
+		fi
+	fi
 fi
 
 #Generate zfs hostid
@@ -357,21 +350,21 @@ zgenhostid -f "$(hostid)"
 
 # Create ZFS pool
 print "Create ZFS Pool"
-zpool create -f -o ashift=12              \
-                -o autotrim=on            \
-                -O acltype=posixacl       \
-                -O relatime=on            \
-                -O xattr=sa               \
-                -O dnodesize=legacy       \
-                -O normalization=formD    \
-                -O mountpoint=none        \
-                -O canmount=off           \
-                -R /mnt                   \
-                -O compression=lz4        \
-                -O encryption=aes-256-gcm \
-                -O keyformat=passphrase   \
-                -O keylocation=file://${ZFSKEY}     \
-                zroot ${ZFS}
+zpool create -f -o ashift=12 \
+	-o autotrim=on \
+	-O acltype=posixacl \
+	-O relatime=on \
+	-O xattr=sa \
+	-O dnodesize=legacy \
+	-O normalization=formD \
+	-O mountpoint=none \
+	-O canmount=off \
+	-R /mnt \
+	-O compression=lz4 \
+	-O encryption=aes-256-gcm \
+	-O keyformat=passphrase \
+	-O keylocation=file://${ZFSKEY} \
+	zroot ${ZFS}
 
 # Build Dataset Tree
 print "Create Root Dataset"
@@ -410,8 +403,10 @@ zpool set cachefile=/etc/zfs/zpool.cache zroot
 cp /etc/zfs/zpool.cache /mnt/etc/zfs/
 
 # Sort Mirrors
-print "Sorting Fastest Mirrors in US"
-echo "--country US" >> /etc/xdg/reflector/reflector.conf
+print "Sorting Fastest Mirrors in Western Europe"
+echo "--country Portugal" >>/etc/xdg/reflector/reflector.conf
+echo "--country France" >>/etc/xdg/reflector/reflector.conf
+echo "--country Ireland" >>/etc/xdg/reflector/reflector.conf
 systemctl start reflector
 
 print "Configure Pacman for Color and Parallel Downloads"
@@ -422,22 +417,22 @@ sed -i 's/#\(Parallel\)/\1/' /etc/pacman.conf
 # Install
 print "Pacstrap"
 pacstrap /mnt "${LINUXARRAY[@]}" \
-      "${LINUXARRAYHEADERS[@]}" \
-      base              \
-      base-devel        \
-      linux-firmware    \
-      intel-ucode       \
-      neovim            \
-      git               \
-      reflector         \
-      networkmanager    \
-      clevis            \
-      tpm2-tools        \
-      openssh           \
-      bash-completion   \
-      plymouth          \
-      arch-install-scripts \
-      systemd-resolvconf
+	"${LINUXARRAYHEADERS[@]}" \
+	base \
+	base-devel \
+	linux-firmware \
+	amd-ucode \
+	neovim \
+	git \
+	reflector \
+	networkmanager \
+	clevis \
+	tpm2-tools \
+	openssh \
+	bash-completion \
+	plymouth \
+	arch-install-scripts \
+	systemd-resolvconf
 
 # Mask mkinitcpio Hook to Speed up installs
 print "Move mkinitcpio pacman Hooks to speed up installs"
@@ -454,44 +449,44 @@ print "Copy Reflector Configuration"
 cp /etc/xdg/reflector/reflector.conf /mnt/etc/xdg/reflector/reflector.conf
 # FSTAB
 print "Generate /etc/fstab and remove ZFS entries"
-genfstab -U /mnt | grep -v "zroot" | tr -s '\n' | sed 's/\/mnt//'  > /mnt/etc/fstab
+genfstab -U /mnt | grep -v "zroot" | tr -s '\n' | sed 's/\/mnt//' >/mnt/etc/fstab
 
 # Set Hostname and configure /etc/hosts
-echo "$HOSTNAMEINSTALL" > /mnt/etc/hostname
-cat > /mnt/etc/hosts <<EOF
+echo "$HOSTNAMEINSTALL" >/mnt/etc/hostname
+cat >/mnt/etc/hosts <<EOF
 #<ip-address> <hostname.domaing.org>  <hostname>
 127.0.0.1 localhost $HOSTNAMEINSTALL
 ::1       localhost $HOSTNAMEINSTALL
 EOF
 
 # Set and Prepare Locales
-echo "LANG=en_US.UTF-8" > /mnt/etc/locale.conf
+echo "LANG=en_US.UTF-8" >/mnt/etc/locale.conf
 sed -i 's/#\(en_US.UTF-8\)/\1/' /mnt/etc/locale.gen
+sed -i 's/#\(pt_PT.UTF-8\)/\1/' /mnt/etc/locale.gen
 
 # mkinitcpio
 print "mkinitcpio UKI configuration"
 sed -i 's/HOOKS=/#HOOKS=/' /mnt/etc/mkinitcpio.conf
 sed -i 's/FILES=/#FILES=/' /mnt/etc/mkinitcpio.conf
-echo "FILES=(/keys/secret.jwe)" >> /mnt/etc/mkinitcpio.conf
+echo "FILES=(/keys/secret.jwe)" >>/mnt/etc/mkinitcpio.conf
 if [[ -n "$SWAPRESUME" ]]; then
-    echo "HOOKS=(base udev plymouth autodetect modconf kms keyboard block clevis plymouth-encrypt resume clevis-secret plymouth-zfs filesystems)" >> /mnt/etc/mkinitcpio.conf
-    CMDLINE="rw zfs=zroot/ROOT/arch splash quiet udev.log_level=3 systemd.show_status=yes cryptdevice=PARTLABEL=SWAP:swap:allow-discards resume=$SWAP"
-    ZBMCMDLINE="rw splash quiet udev.log_level=3 systemd.show_status=yes cryptdevice=PARTLABEL=SWAP:swap:allow-discards resume=$SWAP"
+	echo "HOOKS=(base udev plymouth autodetect modconf kms keyboard block clevis plymouth-encrypt resume clevis-secret plymouth-zfs filesystems)" >>/mnt/etc/mkinitcpio.conf
+	CMDLINE="rw zfs=zroot/ROOT/arch splash quiet udev.log_level=3 systemd.show_status=yes cryptdevice=PARTLABEL=SWAP:swap:allow-discards resume=$SWAP"
+	ZBMCMDLINE="rw splash quiet udev.log_level=3 systemd.show_status=yes cryptdevice=PARTLABEL=SWAP:swap:allow-discards resume=$SWAP"
 else
-    echo "HOOKS=(base udev plymouth autodetect modconf kms keyboard block clevis-secret plymouth-zfs filesystems)" >> /mnt/etc/mkinitcpio.conf
-    CMDLINE="rw zfs=zroot/ROOT/arch splash quiet udev.log_level=3 systemd.show_status=yes"
-    ZBMCMDLINE="rw splash quiet udev.log_level=3 systemd.show_status=yes"
+	echo "HOOKS=(base udev plymouth autodetect modconf kms keyboard block clevis-secret plymouth-zfs filesystems)" >>/mnt/etc/mkinitcpio.conf
+	CMDLINE="rw zfs=zroot/ROOT/arch splash quiet udev.log_level=3 systemd.show_status=yes"
+	ZBMCMDLINE="rw splash quiet udev.log_level=3 systemd.show_status=yes"
 fi
-echo "$CMDLINE" > /mnt/etc/kernel/cmdline
+echo "$CMDLINE" >/mnt/etc/kernel/cmdline
 
-for i in "${LINUXARRAY[@]}"
-do
-cat > /mnt/etc/mkinitcpio.d/"$i".preset <<EOF
+for i in "${LINUXARRAY[@]}"; do
+	cat >/mnt/etc/mkinitcpio.d/"$i".preset <<EOF
 # mkinitcpio preset file for the \'$i\' package
 
 ALL_config="/etc/mkinitcpio.conf"
 ALL_kver="/boot/vmlinuz-$i"
-ALL_microcode="/boot/intel-ucode.img"
+ALL_microcode="/boot/amd-ucode.img"
 
 PRESETS=('default' 'fallback')
 
@@ -516,7 +511,7 @@ cp /etc/zfs/zpool.cache /mnt/etc/zfs/zpool.cache
 ln -sf /run/systemd/resolve/stub-resolv.conf /mnt/etc/resolv.conf
 
 # Add archzfs repo
-cat >> /mnt/etc/pacman.conf << "EOF"
+cat >>/mnt/etc/pacman.conf <<"EOF"
 [archzfs]
 Server = https://zxcvfdsa.com/archzfs/$repo/$arch
 Server = http://archzfs.com/$repo/$arch
@@ -534,13 +529,13 @@ cp "$tmpdir"/mkinitcpio/hooks/plymouth-zfs /mnt/etc/initcpio/hooks/plymouth-zfs
 cp "$tmpdir"/mkinitcpio/install/plymouth-zfs /mnt/etc/initcpio/install/plymouth-zfs
 
 if [[ -n $SWAPRESUME ]]; then
-      mkswap -q "$SWAP"
-      swapon "$SWAP"
-      print "TPM2 unlock of LUKs Swap Partition"
-      cp "$SWAPKEY" /mnt/keys/swap.key
-      cp "$tmpdir"/mkinitcpio/hooks/clevis /mnt/etc/initcpio/hooks/clevis
-      cp "$tmpdir"/mkinitcpio/install/clevis /mnt/etc/initcpio/install/clevis
-      arch-chroot /mnt /bin/bash -xe << EOF
+	mkswap -q "$SWAP"
+	swapon "$SWAP"
+	print "TPM2 unlock of LUKs Swap Partition"
+	cp "$SWAPKEY" /mnt/keys/swap.key
+	cp "$tmpdir"/mkinitcpio/hooks/clevis /mnt/etc/initcpio/hooks/clevis
+	cp "$tmpdir"/mkinitcpio/install/clevis /mnt/etc/initcpio/install/clevis
+	arch-chroot /mnt /bin/bash -xe <<EOF
       pacman -Syu --noconfirm \
                   luksmeta    \
                   libpwquality\
@@ -548,25 +543,32 @@ if [[ -n $SWAPRESUME ]]; then
       systemctl enable clevis-luks-askpass.path
       clevis-luks-bind -d "$SWAPPART" -k /keys/swap.key tpm2 '{}'
 EOF
-    shred /mnt/keys/swap.key
-    rm /mnt/keys/swap.key
-    echo "swap PARTLABEL=SWAP none discard" >> /mnt/etc/crypttab
-    echo "/dev/mapper/swap  none   swap    defaults   0       0" >> /mnt/etc/fstab
+	shred /mnt/keys/swap.key
+	rm /mnt/keys/swap.key
+	echo "swap PARTLABEL=SWAP none discard" >>/mnt/etc/crypttab
+	echo "/dev/mapper/swap  none   swap    defaults   0       0" >>/mnt/etc/fstab
 elif [[ -n $SWAPPART ]]; then
-  echo "swap PARTLABEL=SWAP /dev/urandom swap,cipher=aes-cbc-essiv:sha256,size=256" >> /mnt/etc/crypttab
-  echo "/dev/mapper/swap  none   swap    defaults   0       0" >> /mnt/etc/fstab
+	echo "swap PARTLABEL=SWAP /dev/urandom swap,cipher=aes-cbc-essiv:sha256,size=256" >>/mnt/etc/crypttab
+	echo "/dev/mapper/swap  none   swap    defaults   0       0" >>/mnt/etc/fstab
 fi
 
 print "make AUR builder"
-arch-chroot /mnt /bin/bash -xe << EOF
+arch-chroot /mnt /bin/bash -xe <<EOF
 useradd -m builder
 echo "builder ALL=(ALL:ALL) NOPASSWD: /usr/bin/pacman" > /etc/sudoers.d/builder
 sed -i 's/#MAKEFLAGS=\"-j2\"/MAKEFLAGS=\"-j\$(nproc)\"/' /etc/makepkg.conf
 EOF
 
+print "Build AUR Helper (Paru)"
+arch-chroot /mnt /usr/bin/su -l builder -c "/bin/bash -xe << EOF
+git clone https://aur.archlinux.org/paru-bin
+cd /home/builder/paru-bin
+makepkg -si --noconfirm
+EOF"
+
 # Chroot!
 print "Chroot into System"
-arch-chroot /mnt /bin/bash -xe << EOF
+arch-chroot /mnt /bin/bash -xe <<EOF
 chmod 700 /root
 chmod 600 /keys
 clevis-encrypt-tpm2 '{}' < /keys/zroot.key > /keys/secret.jwe
@@ -575,7 +577,7 @@ rm /keys/zroot.key
 pacman-key -r DDF7DB817396A49B2A2723F7403BD972F75D9D76
 pacman-key --lsign-key DDF7DB817396A49B2A2723F7403BD972F75D9D76
 pacman -Syu --noconfirm zfs-dkms zfs-utils rebuild-detector mlocate
-ln -sf /usr/share/zoneinfo/US/Eastern /etc/localtime
+ln -sf /usr/share/zoneinfo/Europe/Lisbon /etc/localtime
 hwclock --systohc
 locale-gen
 bootctl install
@@ -598,8 +600,8 @@ EOF
 
 print "SSH Configuration"
 mkdir /mnt/etc/ssh/sshd.d/
-echo "Include /etc/ssh/sshd.d/override.conf" >> /mnt/etc/ssh/sshd
-cat > /mnt/etc/ssh/sshd.d/override.conf << EOF
+echo "Include /etc/ssh/sshd.d/override.conf" >>/mnt/etc/ssh/sshd
+cat >/mnt/etc/ssh/sshd.d/override.conf <<EOF
 PermitRootLogin prohibit-password
 PubkeyAuthentication yes
 AuthorizedKeysFile /etc/ssh/authorized_keys/%u .ssh/authorized_keys
@@ -609,11 +611,11 @@ chmod 0644 /mnt/etc/ssh/sshd.d/override.conf
 
 print "Install ZFSBootMenu"
 if [[ "$ZFSREMOTE" = 1 || -f "$SSHKEY" ]]; then
-  arch-chroot /mnt /usr/bin/su -l builder -c "/bin/bash -xe << EOF
+	arch-chroot /mnt /usr/bin/su -l builder -c "/bin/bash -xe << EOF
   paru -S mkinitcpio-netconf mkinitcpio-utils dropbear zfsbootmenu --noconfirm
 EOF"
 else
-  arch-chroot /mnt /usr/bin/su -l builder -c "/bin/bash -xe << EOF
+	arch-chroot /mnt /usr/bin/su -l builder -c "/bin/bash -xe << EOF
   paru -S zfsbootmenu --noconfirm
 EOF"
 fi
@@ -622,26 +624,26 @@ zfs set org.zfsbootmenu:commandline="$ZBMCMDLINE" zroot/ROOT/arch
 
 print "Configure ZFSBootMenu"
 sed -i 's/BINARIES=/#BINARIES=/' /mnt/etc/zfsbootmenu/mkinitcpio.conf
-echo "BINARIES=(/usr/bin/arch-chroot)" >> /mnt/etc/zfsbootmenu/mkinitcpio.conf
+echo "BINARIES=(/usr/bin/arch-chroot)" >>/mnt/etc/zfsbootmenu/mkinitcpio.conf
 if [[ "$ZFSREMOTE" = 1 || -f "$SSHKEY" ]]; then
-  mkdir -p /mnt/etc/zfsbootmenu/initcpio/{hooks,install}
-  cp "$tmpdir"/mkinitcpio/hooks/dropbear /mnt/etc/zfsbootmenu/initcpio/hooks/dropbear
-  cp "$tmpdir"/mkinitcpio/install/dropbear /mnt/etc/zfsbootmenu/initcpio/install/dropbear
-  mkdir -p /mnt/etc/dropbear
-  arch-chroot /mnt /bin/bash -xe << "EOF"
+	mkdir -p /mnt/etc/zfsbootmenu/initcpio/{hooks,install}
+	cp "$tmpdir"/mkinitcpio/hooks/dropbear /mnt/etc/zfsbootmenu/initcpio/hooks/dropbear
+	cp "$tmpdir"/mkinitcpio/install/dropbear /mnt/etc/zfsbootmenu/initcpio/install/dropbear
+	mkdir -p /mnt/etc/dropbear
+	arch-chroot /mnt /bin/bash -xe <<"EOF"
   for keytype in rsa ecdsa ed25519; do
     dropbearkey -t "${keytype}" -f "/etc/dropbear/dropbear_${keytype}_host_key"
   done
   echo "dropbear_listen=2222" > /etc/dropbear/dropbear.conf
 EOF
-  if [[ -f "$SSHKEY" ]]; then
-    cp "$SSHKEY" /mnt/etc/dropbear/root_key
-  else
-    touch /mnt/etc/dropbear/root_key
-  fi
-  sed -i 's/HOOKS=/#HOOKS=/' /mnt/etc/zfsbootmenu/mkinitcpio.conf
-  echo "HOOKS=(base udev autodetect modconf block filesystems keyboard netconf dropbear zfsbootmenu)" >> /mnt/etc/zfsbootmenu/mkinitcpio.conf
-  cat > /mnt/etc/zfsbootmenu/config.yaml <<"EOF"
+	if [[ -f "$SSHKEY" ]]; then
+		cp "$SSHKEY" /mnt/etc/dropbear/root_key
+	else
+		touch /mnt/etc/dropbear/root_key
+	fi
+	sed -i 's/HOOKS=/#HOOKS=/' /mnt/etc/zfsbootmenu/mkinitcpio.conf
+	echo "HOOKS=(base udev autodetect modconf block filesystems keyboard netconf dropbear zfsbootmenu)" >>/mnt/etc/zfsbootmenu/mkinitcpio.conf
+	cat >/mnt/etc/zfsbootmenu/config.yaml <<"EOF"
   Global:
     ManageImages: true
     BootMountPoint: /efi
@@ -659,11 +661,11 @@ EOF
     Path: /boot/vmlinuz-linux-lts
     Prefix: zfsbootmenu
 EOF
-  if [[ ! -f "$SSHKEY" ]]; then
-    print "Be sure to copy in ssh publickeys to /etc/dropbear/root_key for SSH access\n Dropbear will listen on port 2222 and use DHCP by default with this setup"
-  fi
+	if [[ ! -f "$SSHKEY" ]]; then
+		print "Be sure to copy in ssh publickeys to /etc/dropbear/root_key for SSH access\n Dropbear will listen on port 2222 and use DHCP by default with this setup"
+	fi
 else
-  cat > /mnt/etc/zfsbootmenu/config.yaml <<"EOF"
+	cat >/mnt/etc/zfsbootmenu/config.yaml <<"EOF"
   Global:
     ManageImages: true
     BootMountPoint: /efi
@@ -690,35 +692,35 @@ mv /mnt/90-mkinitcpio-install.hook /mnt/usr/share/libalpm/hooks/90-mkinitcpio-in
 arch-chroot /mnt /bin/mkinitcpio -P
 arch-chroot /mnt /bin/generate-zbm
 arch-chroot /mnt /bin/generate-zbm
-cat > /mnt/efi/loader/entries/zfsbootmenu.conf <<"EOF"
+cat >/mnt/efi/loader/entries/zfsbootmenu.conf <<"EOF"
 title ZFSBootMenu
 efi   /EFI/zbm/zfsbootmenu.EFI
 EOF
-cat > /mnt/efi/loader/entries/zfsbootmenu-backup.conf <<"EOF"
+cat >/mnt/efi/loader/entries/zfsbootmenu-backup.conf <<"EOF"
 title ZFSBootMenu (Backup)
 efi   /EFI/zbm/zfsbootmenu-backup.EFI
 EOF
 if [[ -n "$DEFAULTBOOT" ]]; then
-  print "Setting $DEFAULTBOOT as the Default Boot Option."
-  cat > /mnt/efi/loader/loader.conf <<EOF
+	print "Setting $DEFAULTBOOT as the Default Boot Option."
+	cat >/mnt/efi/loader/loader.conf <<EOF
 default $DEFAULTBOOT
 #timeout 3
 console-mode max
 editor no
 EOF
 else
-  print "Setting archlinux-linux-lts.efi as Default Boot Option."
-  cat > /mnt/efi/loader/loader.conf <<"EOF"
+	print "Setting archlinux-linux-lts.efi as Default Boot Option."
+	cat >/mnt/efi/loader/loader.conf <<"EOF"
 default archlinux-linux-lts.efi
 #timeout 3
 console-mode max
 editor no
 EOF
-  fi
+fi
 
 print "Making Pacman Hooks"
 mkdir -p /mnt/etc/pacman.d/hooks
-cat > /mnt/etc/pacman.d/hooks/95-systemd-boot.hook << "EOF"
+cat >/mnt/etc/pacman.d/hooks/95-systemd-boot.hook <<"EOF"
 [Trigger]
 Type = Package
 Operation = Upgrade
@@ -730,20 +732,19 @@ When = PostTransaction
 Exec = /usr/bin/systemctl restart systemd-boot-update.service
 EOF
 
-cat > /mnt/usr/local/bin/ucode-zfsbootmenu << "EOF"
+cat >/mnt/usr/local/bin/ucode-zfsbootmenu <<"EOF"
 #!/bin/sh
 
 EOF
 
-for i in "${LINUXARRAY[@]}"
-do
-cat >> /mnt/usr/local/bin/ucode-zfsbootmenu << EOF
+for i in "${LINUXARRAY[@]}"; do
+	cat >>/mnt/usr/local/bin/ucode-zfsbootmenu <<EOF
 cp /boot/initramfs-$i.img /boot/initramfs-$i-nomc.img
-cat /boot/intel-ucode.img /boot/initramfs-$i-nomc.img > /boot/initramfs-$i.img
+cat /boot/amd-ucode.img /boot/initramfs-$i-nomc.img > /boot/initramfs-$i.img
 EOF
 done
 chmod +x /mnt/usr/local/bin/ucode-zfsbootmenu
-cat > /mnt/etc/pacman.d/hooks/91-ucode-zfsbootmenu.hook << "EOF"
+cat >/mnt/etc/pacman.d/hooks/91-ucode-zfsbootmenu.hook <<"EOF"
 [Trigger]
 Type = Path
 Operation = Install
@@ -759,7 +760,7 @@ NeedsTargets
 EOF
 
 print "Cleanup AUR Builder"
-arch-chroot /mnt /bin/bash -xe << EOF
+arch-chroot /mnt /bin/bash -xe <<EOF
 userdel builder
 rm /etc/sudoers.d/builder
 rm -rf /home/builder
@@ -767,86 +768,147 @@ EOF
 
 # Set root passwd
 print "Setting Root Account Password"
-chpasswd --root /mnt/ < /tmp/root-chpasswd.key
+chpasswd --root /mnt/ </tmp/root-chpasswd.key
+
+EFI_LINUX=/efi/EFI/Linux/archlinux-linux.efi
+EFI_LTS=/efi/EFI/LinOperationux/archlinux-linux-lts.efi
+EFI_ZEN=/efi/EFI/Linux/archlinux-linux-zen.efi
+EFI_HARD=/efi/EFI/Linux/archlinux-linux-hardened.efi
+EFI_LINUXFALL=/efi/EFI/Linux/archlinux-linux-fallback.efi
+EFI_LTSFALL=/efi/EFI/Linux/archlinux-linux-lts-fallback.efi
+EFI_ZENFALL=/efi/EFI/Linux/archlinux-linux-zen-fallback.efi
+EFI_HARDFALL=/efi/EFI/Linux/archlinux-linux-hardened-fallback.efi
+EFI_BOOT=/efi/EFI/BOOT/BOOTX64.EFI
+EFI_SYSBOOT=/efi/EFI/systemd/systemd-bootx64.efi
+EFI_ZFSBOOT=/efi/EFI/zbm/zfsbootmenu.EFI
+EFI_ZFSBACK=/efi/EFI/zbm/zfsbootmenu-backup.EFI
 
 if [[ $SECUREBOOT = 1 ]]; then
-    print "Must have Secureboot in Setup Mode"
-    pacman -S sbctl --noconfirm
-    SETUPMODE=$(sbctl status | grep Setup | awk '{ print $4 }')
-      if [[ $SETUPMODE = Enabled ]]; then
-          print "Generatng and Enrolling Keys with Microsoft Keys"
-          arch-chroot /mnt /bin/bash -xe << EOF
+	print "Must have Secureboot in Setup Mode"
+	pacman -S sbctl --noconfirm
+	SETUPMODE=$(sbctl status | grep Setup | awk '{ print $4 }')
+	if [[ $SETUPMODE = Enabled ]]; then
+		print "Generatng and Enrolling Keys with Microsoft Keys"
+		arch-chroot /mnt /bin/bash -xe <<EOF
           pacman -Syu sbctl --noconfirm
           sbctl create-keys
           sbctl enroll-keys --microsoft
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-lts.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-zen.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-hardened.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-fallback.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-lts-fallback.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-zen-fallback.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-hardened-fallback.efi
-          sbctl sign -s /efi/EFI/BOOT/BOOTX64.EFI
-          sbctl sign -s /efi/EFI/systemd/systemd-bootx64.efi
-          sbctl sign -s /efi/EFI/zbm/zfsbootmenu.EFI
-          sbctl sign -s /efi/EFI/zbm/zfsbootmenu-backup.EFI
+          if [[ -f "EFI_LINUX" ]]; then
+            sbctl sign -s /efi/EFI/Linux/archlinux-linux.efi
+          fi
+          if [[ -f "EFI_LTS" ]]; then
+            sbctl sign -s /efi/EFI/Linux/archlinux-linux-lts.efi
+          fi
+          if [[ -f "EFI_ZEN" ]]; then
+            sbctl sign -s /efi/EFI/Linux/archlinux-linux-zen.efi
+          fi
+          if [[ -f "EFI_HARD" ]]; then
+            sbctl sign -s /efi/EFI/Linux/archlinux-linux-hardened.efi
+          fi
+          if [[ -f "EFI_LINUXFALL" ]]; then
+            sbctl sign -s /efi/EFI/Linux/archlinux-linux-fallback.efi
+          fi
+          if [[ -f "EFI_LTSFALL" ]]; then
+            sbctl sign -s /efi/EFI/Linux/archlinux-linux-lts-fallback.efi
+          fi
+          if [[ -f "EFI_ZENFALL" ]]; then
+            sbctl sign -s /efi/EFI/Linux/archlinux-linux-zen-fallback.efi
+          fi
+          if [[ -f "EFI_HARDFALL" ]]; then
+            sbctl sign -s /efi/EFI/Linux/archlinux-linux-hardened-fallback.efi
+          fi
+          if [[ -f "EFI_BOOT" ]]; then
+            sbctl sign -s /efi/EFI/BOOT/BOOTX64.EFI
+          fi
+          if [[ -f "EFI_SYSBOOT" ]]; then
+            sbctl sign -s /efi/EFI/systemd/systemd-bootx64.efi
+          fi
+          if [[ -f "EFI_ZFSBOOT" ]]; then
+            sbctl sign -s /efi/EFI/zbm/zfsbootmenu.EFI
+          fi
+          if [[ -f "EFI_ZFSBACK" ]]; then
+            sbctl sign -s /efi/EFI/zbm/zfsbootmenu-backup.EFI
+          fi
           sbctl status
 EOF
-          SECUREBOOTENABLED=1
-        else
-          print "Enroll Keys on a later boot when in setup mode"
-          arch-chroot /mnt /bin/bash -xe << EOF
+		SECUREBOOTENABLED=1
+	else
+		print "Enroll Keys on a later boot when in setup mode"
+		arch-chroot /mnt /bin/bash -xe <<EOF
           pacman -Syu sbctl --noconfirm
           sbctl create-keys
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-lts.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-zen.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-hardened.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-fallback.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-lts-fallback.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-zen-fallback.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-hardened-fallback.efi
-          sbctl sign -s /efi/EFI/BOOT/BOOTX64.EFI
-          sbctl sign -s /efi/EFI/systemd/systemd-bootx64.efi
-          sbctl sign -s /efi/EFI/zbm/zfsbootmenu.EFI
-          sbctl sign -s /efi/EFI/zbm/zfsbootmenu-backup.EFI
+          if [[ -f "EFI_LINUX" ]]; then
+            sbctl sign -s /efi/EFI/Linux/archlinux-linux.efi
+          fi
+          if [[ -f "EFI_LTS" ]]; then
+            sbctl sign -s /efi/EFI/Linux/archlinux-linux-lts.efi
+          fi
+          if [[ -f "EFI_ZEN" ]]; then
+            sbctl sign -s /efi/EFI/Linux/archlinux-linux-zen.efi
+          fi
+          if [[ -f "EFI_HARD" ]]; then
+            sbctl sign -s /efi/EFI/Linux/archlinux-linux-hardened.efi
+          fi
+          if [[ -f "EFI_LINUXFALL" ]]; then
+            sbctl sign -s /efi/EFI/Linux/archlinux-linux-fallback.efi
+          fi
+          if [[ -f "EFI_LTSFALL" ]]; then
+            sbctl sign -s /efi/EFI/Linux/archlinux-linux-lts-fallback.efi
+          fi
+          if [[ -f "EFI_ZENFALL" ]]; then
+            sbctl sign -s /efi/EFI/Linux/archlinux-linux-zen-fallback.efi
+          fi
+          if [[ -f "EFI_HARDFALL" ]]; then
+            sbctl sign -s /efi/EFI/Linux/archlinux-linux-hardened-fallback.efi
+          fi
+          if [[ -f "EFI_BOOT" ]]; then
+            sbctl sign -s /efi/EFI/BOOT/BOOTX64.EFI
+          fi
+          if [[ -f "EFI_SYSBOOT" ]]; then
+            sbctl sign -s /efi/EFI/systemd/systemd-bootx64.efi
+          fi
+          if [[ -f "EFI_ZFSBOOT" ]]; then
+            sbctl sign -s /efi/EFI/zbm/zfsbootmenu.EFI
+          fi
+          if [[ -f "EFI_ZFSBACK" ]]; then
+            sbctl sign -s /efi/EFI/zbm/zfsbootmenu-backup.EFI
+          fi
           sbctl status
 EOF
-      fi
+	fi
 fi
 
 if [[ -n "$SECUREBOOTENABLED" && -n "$RESUME" ]]; then
-  print "Bind LUKs Key and ZFS passphrase to Secureboot state on a later boot."
+	print "Bind LUKs Key and ZFS passphrase to Secureboot state on a later boot."
 elif [[ -n "$SECUREBOOTENABLED" ]]; then
-  print "Bind ZFS passphrase to Secureboot state on a later boot."
+	print "Bind ZFS passphrase to Secureboot state on a later boot."
 fi
 
 print "Make Install Snapshot"
 zfs snapshot zroot/ROOT/arch@install
 
 if [[ -n "$UMOUNT" ]]; then
-  umountandexport
-  else
-    ask "Do you want to unmount all partitions and export zpool?"
-      if [[ $REPLY =~ ^[Yy]$ ]]; then
-        umountandexport
-      else
-        print "Be sure to unmount all partitions and export zpool before rebooting"
-      fi
-  fi
+	umountandexport
+else
+	ask "Do you want to unmount all partitions and export zpool?"
+	if [[ $REPLY =~ ^[Yy]$ ]]; then
+		umountandexport
+	else
+		print "Be sure to unmount all partitions and export zpool before rebooting"
+	fi
+fi
 
 echo -e "\e[32mAll OK"
 
 if [[ -n "$AUTOREBOOT" ]]; then
-  count=5
-  print "System will reboot automatically in $count Seconds. Cancel with CTRL+C"
-  (( ++count ))
-  while (( --count > 0 )); do
-    echo "Reboot in $count Seconds"
-    sleep 1
-  done
-  echo "Rebooting System"
-  sleep 1
-  reboot
+	count=5
+	print "System will reboot automatically in $count Seconds. Cancel with CTRL+C"
+	((++count))
+	while ((--count > 0)); do
+		echo "Reboot in $count Seconds"
+		sleep 1
+	done
+	echo "Rebooting System"
+	sleep 1
+	reboot
 fi
